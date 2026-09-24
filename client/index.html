@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Career Saathi — Executive-Grade AI Interview Preparation & Rehearsal</title>
+  <meta name="description"
+    content="Executive-grade technical and behavioral interview rehearsal cockpit with real-time speech telemetry, tactile glassmorphism, and instant 10-factor evaluation." />
+  <!-- Google Fonts: Plus Jakarta Sans & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234cd7f6'><path d='M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'/></svg>" />
+  <style>
+    @keyframes spin {
+      0% {
+        transform: rotate(0deg);
+      }
+
+      100% {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+</head>
+
+<body class="dark-theme">
+  <div id="root">
+    <!-- Fallback Loading State -->
+    <div id="initial-loader"
+      style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0f131d; color: #dfe2f1; font-family: 'Plus Jakarta Sans', sans-serif; text-align: center; padding: 2rem;">
+      <div>
+        <div
+          style="width: 46px; height: 46px; border: 3px solid rgba(76,215,246,0.2); border-top-color: #4cd7f6; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 1.25rem auto;">
+        </div>
+        <h2
+          style="font-size: 1.35rem; font-weight: 700; margin-bottom: 0.5rem; letter-spacing: -0.01em; color: #4cd7f6;">
+          Initializing Career Saathi Cockpit…</h2>
+        <p style="color: #9ca3af; font-size: 0.9rem;">Calibrating AI interview intelligence & audio telemetry</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Diagnostic check for direct file:// access
+    if (window.location.protocol === 'file:') {
+      document.addEventListener('DOMContentLoaded', function () {
+        var root = document.getElementById('root');
+        if (root) {
+          root.innerHTML = '<div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #090d16; color: #f8fafc; font-family: sans-serif; padding: 2rem;">' +
+            '<div style="max-width: 580px; background: #111726; border: 1px solid rgba(99,102,241,0.3); border-radius: 16px; padding: 2.5rem; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">' +
+            '<div style="font-size: 2.5rem; margin-bottom: 1rem;">🚀</div>' +
+            '<h2 style="color: #f8fafc; margin-bottom: 0.75rem; font-size: 1.4rem;">Please Open Via Local Server</h2>' +
+            '<p style="color: #94a3b8; font-size: 0.95rem; line-height: 1.6; margin-bottom: 1.5rem;">' +
+            'You opened <code>index.html</code> directly from your file system. Web applications require an HTTP server to load ES modules and connect to the AI API.' +
+            '</p>' +
+            '<a href="http://localhost:5173" style="display: inline-block; padding: 0.85rem 1.75rem; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 1rem;">' +
+            'Open http://localhost:5173' +
+            '</a>' +
+            '<div style="margin-top: 1rem; color: #64748b; font-size: 0.8rem;">Or run: <code>npm run dev</code> in your terminal</div>' +
+            '</div></div>';
+        }
+      });
+    }
+  </script>
+
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+
+</html>

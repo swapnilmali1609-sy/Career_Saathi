@@ -1,0 +1,19 @@
+{
+  "name": "rehearsal-server",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "test": "node src/tests/interviewConstraints.test.js && node src/tests/proctoringAlgorithms.test.js && node src/tests/streakAlgorithms.test.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.23.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^18.0.1",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.23.0"
+  }
+}
