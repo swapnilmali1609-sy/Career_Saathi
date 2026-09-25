@@ -96,6 +96,15 @@ async function runStreakTests() {
   {
     const testUserId = 'user-test-streak-simulator';
 
+    // Ensure parent test user exists for foreign key constraint
+    await db.users.create({
+      id: testUserId,
+      email: 'streak-simulator@test.local',
+      name: 'Streak Simulator',
+      password: 'password_hash_test',
+      role: 'USER'
+    }).catch(() => {});
+
     // Reset test user progress
     await db.userProgress.update(testUserId, {
       userId: testUserId,
