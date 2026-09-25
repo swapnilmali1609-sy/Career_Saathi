@@ -67,7 +67,7 @@ router.get('/stats', async (req, res) => {
       avgPlatformScore: 82,
       totalBankQuestions: totalQuestions || questionBankData.length,
       totalCodingProblems: codingProblemsData.length,
-      aiModel: process.env.GEMINI_API_KEY ? 'gemini-2.5-flash (Connected)' : 'Intelligent Hybrid Engine (Active)',
+      aiModel: process.env.GEMINI_API_KEY ? `${process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'} (Connected)` : 'Intelligent Hybrid Engine (Active)',
       estimatedTokensConsumed: totalSessions * 1200,
       systemUptime: process.uptime()
     });

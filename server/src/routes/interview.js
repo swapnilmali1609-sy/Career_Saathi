@@ -4,7 +4,7 @@ import db from '../db/index.js';
 import { requireAuth } from '../services/authService.js';
 import { getActiveResume } from './resume.js';
 import { getRoleProfile } from '../config/roleConfigs.js';
-import { getLanguageProfile } from '../config/languageConfigs.js';
+import { getLanguageProfile, getDefaultLanguageForRole, isLanguageAllowedForRole } from '../config/languageConfigs.js';
 import {
   generateInterviewQuestions,
   evaluateCandidateAnswer,
@@ -53,7 +53,8 @@ router.post('/create', requireAuth, async (req, res) => {
     const roleProfile = normRole.roleProfile;
 
     // 2. Programming Language Normalization (Rule 25: Never override explicit choice with userProfile.skills[0])
-    const rawLanguage = programmingLanguage || language || (userProfile.preferredLanguage) || (normRole.roleId === 'frontend_developer' ? 'JavaScript' : 'Python');
+    const defaultRoleLanguage = getDefaultLanguageForRole(resolvedRole, domain);
+    const rawLanguage = programmingLanguage || language || (userProfile.preferredLanguage) || defaultRoleLanguage;
     const normLang = normalizeProgrammingLanguage(rawLanguage);
     if (!normLang.isValid) {
       return res.status(400).json({ message: normLang.error });

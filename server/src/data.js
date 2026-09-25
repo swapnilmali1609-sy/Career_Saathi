@@ -125,7 +125,50 @@ B.S. in Computer Science | State University (2018 - 2022)`,
   ]
 ]);
 export const jobDescriptions = new Map();
-export const sessions = new Map();
+const _now = new Date();
+const _oneDayMs = 24 * 60 * 60 * 1000;
+export const sessions = new Map([
+  [
+    'sess-demo-yesterday',
+    {
+      id: 'sess-demo-yesterday',
+      userId: 'user-demo-1',
+      category: 'TECHNICAL',
+      domain: 'Backend & Distributed Systems',
+      difficulty: 'INTERMEDIATE',
+      targetRole: 'Senior Software Engineer',
+      programmingLanguage: 'JavaScript',
+      status: 'COMPLETED',
+      totalQuestions: 5,
+      overallScore: 88,
+      technicalScore: 90,
+      communicationScore: 85,
+      confidenceScore: 88,
+      createdAt: new Date(_now.getTime() - 1 * _oneDayMs).toISOString(),
+      completedAt: new Date(_now.getTime() - 1 * _oneDayMs).toISOString()
+    }
+  ],
+  [
+    'sess-demo-3days-ago',
+    {
+      id: 'sess-demo-3days-ago',
+      userId: 'user-demo-1',
+      category: 'CODING',
+      domain: 'Full-Stack Development',
+      difficulty: 'INTERMEDIATE',
+      targetRole: 'Full-Stack Engineer',
+      programmingLanguage: 'Python',
+      status: 'COMPLETED',
+      totalQuestions: 5,
+      overallScore: 84,
+      technicalScore: 86,
+      communicationScore: 82,
+      confidenceScore: 84,
+      createdAt: new Date(_now.getTime() - 3 * _oneDayMs).toISOString(),
+      completedAt: new Date(_now.getTime() - 3 * _oneDayMs).toISOString()
+    }
+  ]
+]);
 export const codingSubmissions = [];
 
 export const schedules = new Map([

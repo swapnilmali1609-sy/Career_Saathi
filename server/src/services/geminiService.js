@@ -1,5 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { questionBankData } from '../data.js';
 import { getRoleProfile } from '../config/roleConfigs.js';
 import { getLanguageProfile } from '../config/languageConfigs.js';
@@ -13,9 +15,16 @@ import {
 import { validateQuestion, validateQuestionBatch } from './questionValidator.js';
 import { generateCuratedQuestions } from './curatedQuestionBank.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Ensure .env is loaded regardless of execution working directory
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 dotenv.config();
 
 const apiKey = process.env.GEMINI_API_KEY;
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 let aiClient = null;
 
 if (apiKey && apiKey !== 'your_gemini_api_key_here') {
@@ -51,6 +60,25 @@ function sanitizePromptText(text = '', maxLength = 2500) {
     .replace(/[^\x20-\x7E\t\n\r]/g, ' ')
     .replace(/["`]/g, "'")
     .trim();
+}
+
+/**
+ * Resilient caller for Gemini API with retry logic on 503 high demand or 429 rate limit
+ */
+async function callGeminiWithRetry(options, retries = 2, delayMs = 1200) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await aiClient.models.generateContent(options);
+    } catch (err) {
+      const isTransient = err.status === 503 || err.status === 429 || (err.message && (err.message.includes('high demand') || err.message.includes('RESOURCE_EXHAUSTED')));
+      if (isTransient && attempt < retries) {
+        console.log(`[GeminiService] API busy (${err.status || '503'}). Retrying attempt ${attempt + 1}/${retries}...`);
+        await new Promise(r => setTimeout(r, delayMs * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 /**
@@ -170,8 +198,8 @@ Return ONLY valid JSON matching this schema:
   ]
 }`;
 
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-2.5-flash',
+      const response = await callGeminiWithRetry({
+        model: GEMINI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json'
@@ -201,8 +229,8 @@ DO NOT mention any of those prohibited topics. Focus 100% on ${resolvedRoleProfi
 Return ONLY valid JSON matching the schema with key "questions".`;
 
           try {
-            const retryRes = await aiClient.models.generateContent({
-              model: 'gemini-2.5-flash',
+            const retryRes = await callGeminiWithRetry({
+              model: GEMINI_MODEL,
               contents: retryPrompt,
               config: { responseMimeType: 'application/json' }
             });
@@ -351,8 +379,8 @@ Return ONLY valid JSON matching this schema:
   "followUpSuggestions": ["string"]
 }`;
 
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-2.5-flash',
+      const response = await callGeminiWithRetry({
+        model: GEMINI_MODEL,
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });
@@ -432,8 +460,8 @@ Return JSON:
   "rationale": "string"
 }`;
 
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-2.5-flash',
+      const response = await callGeminiWithRetry({
+        model: GEMINI_MODEL,
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });
@@ -519,8 +547,8 @@ Return JSON:
   "actionableSuggestions": ["string"]
 }`;
 
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-2.5-flash',
+      const response = await callGeminiWithRetry({
+        model: GEMINI_MODEL,
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });
@@ -566,8 +594,8 @@ Return JSON:
   "recommendations": ["string"]
 }`;
 
-      const response = await aiClient.models.generateContent({
-        model: 'gemini-2.5-flash',
+      const response = await callGeminiWithRetry({
+        model: GEMINI_MODEL,
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });

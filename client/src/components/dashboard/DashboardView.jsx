@@ -15,7 +15,9 @@ import {
   Clock,
   Play,
   UserCog,
-  BookOpen
+  BookOpen,
+  Video,
+  XCircle
 } from 'lucide-react';
 import { getDefaultLanguageForRole } from '../../constants/languages.js';
 
@@ -337,54 +339,122 @@ export default function DashboardView({
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-            {rolling7Days.map((item, idx) => (
-              <div
-                key={idx}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: '0.35rem'
-                }}
-              >
-                <span style={{ fontSize: '0.7rem', fontWeight: item.isToday ? 800 : 600, color: item.isToday ? 'var(--primary)' : 'var(--text-tertiary)' }}>
-                  {item.isToday ? 'Today' : item.day}
-                </span>
-                <div
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.65rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+              {rolling7Days.map((item, idx) => {
+                const isMockGiven = item.hasMock || item.status === 'MOCK_GIVEN';
+                const isAbsent = item.isAbsent || item.status === 'ABSENT';
+                const isPractice = item.status === 'PRACTICE_COMPLETED';
+                const isTodayPending = item.status === 'TODAY_PENDING' || (item.isToday && !item.active);
+
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      cursor: 'pointer'
+                    }}
+                    onClick={() => onNavigate && onNavigate('achievements')}
+                    title={`${item.dayFormatted || item.date}: ${item.statusLabel || (isMockGiven ? 'Mock Interview Completed' : isAbsent ? 'Absent (No Session)' : 'Active')}`}
+                  >
+                    <span style={{ fontSize: '0.7rem', fontWeight: item.isToday ? 800 : 600, color: item.isToday ? 'var(--primary)' : 'var(--text-tertiary)' }}>
+                      {item.isToday ? 'Today' : item.day}
+                    </span>
+                    <div
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 'var(--radius-full)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                        background: isMockGiven
+                          ? 'rgba(16, 185, 129, 0.22)'
+                          : isAbsent
+                          ? 'rgba(244, 63, 94, 0.16)'
+                          : isPractice
+                          ? 'rgba(99, 102, 241, 0.2)'
+                          : item.isToday
+                          ? 'rgba(245, 158, 11, 0.18)'
+                          : 'var(--bg-surface-elevated)',
+                        border: `1.5px solid ${
+                          isMockGiven
+                            ? 'var(--accent-emerald)'
+                            : isAbsent
+                            ? 'var(--accent-rose)'
+                            : isPractice
+                            ? 'var(--primary)'
+                            : item.isToday
+                            ? 'var(--accent-amber)'
+                            : 'var(--border-subtle)'
+                        }`,
+                        color: isMockGiven
+                          ? 'var(--accent-emerald)'
+                          : isAbsent
+                          ? 'var(--accent-rose)'
+                          : isPractice
+                          ? 'var(--primary)'
+                          : item.isToday
+                          ? 'var(--accent-amber)'
+                          : 'var(--text-tertiary)',
+                        transition: 'transform 0.15s ease'
+                      }}
+                    >
+                      {isMockGiven ? (
+                        <Video size={14} />
+                      ) : isAbsent ? (
+                        <XCircle size={14} />
+                      ) : isPractice ? (
+                        <CheckCircle2 size={14} />
+                      ) : isTodayPending ? (
+                        <Flame size={14} />
+                      ) : (
+                        '·'
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Micro Attendance Legend */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', fontSize: '0.68rem', color: 'var(--text-tertiary)' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent-emerald)', display: 'inline-block' }} />
+                Mock Given
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--primary)', display: 'inline-block' }} />
+                Practice
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent-rose)', display: 'inline-block' }} />
+                Absent
+              </span>
+              {onNavigate && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('achievements')}
                   style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 'var(--radius-full)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '0.85rem',
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--primary)',
+                    cursor: 'pointer',
+                    fontSize: '0.68rem',
                     fontWeight: 700,
-                    background: item.active
-                      ? 'rgba(16, 185, 129, 0.2)'
-                      : item.isToday
-                      ? 'rgba(245, 158, 11, 0.15)'
-                      : 'var(--bg-surface-elevated)',
-                    border: `1.5px solid ${
-                      item.active
-                        ? 'var(--accent-emerald)'
-                        : item.isToday
-                        ? 'var(--accent-amber)'
-                        : 'var(--border-subtle)'
-                    }`,
-                    color: item.active
-                      ? 'var(--accent-emerald)'
-                      : item.isToday
-                      ? 'var(--accent-amber)'
-                      : 'var(--text-tertiary)'
+                    padding: 0,
+                    textDecoration: 'underline'
                   }}
-                  title={`${item.date}: ${item.active ? 'Practiced' : item.isToday ? 'Pending practice today' : 'No activity'}`}
                 >
-                  {item.active ? '✓' : item.isToday ? '🔥' : '·'}
-                </div>
-              </div>
-            ))}
+                  View Details →
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

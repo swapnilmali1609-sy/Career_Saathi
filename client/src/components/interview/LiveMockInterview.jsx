@@ -31,7 +31,9 @@ import {
   ChevronDown,
   ChevronUp,
   Code2,
-  Lock
+  Lock,
+  Sliders,
+  Sun
 } from 'lucide-react';
 import { getRoleProfile } from '../../constants/roleConfigs.js';
 import { getLanguageProfile } from '../../constants/languages.js';
@@ -60,6 +62,19 @@ export default function LiveMockInterview({
   });
   const [videoDevices, setVideoDevices] = useState([]);
   const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState('');
+  const [proctorSensitivity, setProctorSensitivity] = useState('STANDARD'); // 'RELAXED', 'STANDARD', 'STRICT'
+  const [setupVisualMetrics, setSetupVisualMetrics] = useState({
+    detectedPersons: 1,
+    isMultiplePersons: false,
+    isCameraObstructed: false,
+    isCandidatePresent: true,
+    faces: [{ x: 0.25, y: 0.15, width: 0.50, height: 0.65, confidence: 95 }],
+    confidence: 95,
+    lightingCondition: 'OPTIMAL',
+    avgBrightness: 100
+  });
+  const [overrideChecked, setOverrideChecked] = useState(false);
+  const [calibratingLighting, setCalibratingLighting] = useState(false);
 
   // Active Interview State
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -235,6 +250,30 @@ export default function LiveMockInterview({
     }
   };
 
+  // Adjust proctoring sensitivity mode ('RELAXED', 'STANDARD', 'STRICT')
+  const handleSensitivityChange = (newMode) => {
+    setProctorSensitivity(newMode);
+    if (setupVisualRef.current) {
+      setupVisualRef.current.setSensitivity(newMode);
+    }
+    if (proctorCoordinatorRef.current) {
+      proctorCoordinatorRef.current.setSensitivity(newMode);
+    }
+  };
+
+  // Auto-calibrate ambient lighting and room baseline
+  const handleCalibrateLighting = async () => {
+    if (!setupVisualRef.current) return;
+    setCalibratingLighting(true);
+    try {
+      await setupVisualRef.current.calibrateEnvironment();
+      const updated = await setupVisualRef.current.analyzeFrame();
+      setSetupVisualMetrics(updated);
+    } finally {
+      setTimeout(() => setCalibratingLighting(false), 350);
+    }
+  };
+
   // 1. Mandatory Media Device Initialization (Fast & Direct)
   const requestMediaAccess = async () => {
     setMediaError(null);
@@ -308,7 +347,7 @@ export default function LiveMockInterview({
 
       // Create persistent VisualProctor for setup if not already created
       if (setupVideoRef.current && !setupVisualRef.current) {
-        setupVisualRef.current = new VisualProctor(setupVideoRef.current);
+        setupVisualRef.current = new VisualProctor(setupVideoRef.current, { sensitivity: proctorSensitivity });
       }
 
       // Fast acoustic calibration in background (300ms) without blocking video presentation
@@ -342,11 +381,12 @@ export default function LiveMockInterview({
 
         if (setupVideoRef.current && hasVideo) {
           if (!setupVisualRef.current) {
-            setupVisualRef.current = new VisualProctor(setupVideoRef.current);
+            setupVisualRef.current = new VisualProctor(setupVideoRef.current, { sensitivity: proctorSensitivity });
           }
           const vMetrics = await setupVisualRef.current.analyzeFrame();
           setSetupPersons(vMetrics.detectedPersons);
           setSetupFaceObstructed(vMetrics.isCameraObstructed);
+          setSetupVisualMetrics(vMetrics);
         }
       }, 200);
 
@@ -410,6 +450,7 @@ export default function LiveMockInterview({
       const coordinator = new ProctoringCoordinator({
         videoElement: videoRef.current,
         mediaStream: streamRef.current,
+        sensitivity: proctorSensitivity,
         onTelemetryUpdate: (telemetry) => {
           setLiveTelemetry(telemetry);
         },
@@ -417,7 +458,7 @@ export default function LiveMockInterview({
           setProctorWarning(warn.message);
           playAudioCue('warning');
           if (warningTimeoutRef.current) clearTimeout(warningTimeoutRef.current);
-          warningTimeoutRef.current = setTimeout(() => setProctorWarning(null), 3500);
+          warningTimeoutRef.current = setTimeout(() => setProctorWarning(null), 4000);
         },
         onViolation: (violation) => {
           handleProctorViolation(violation);
@@ -809,7 +850,7 @@ export default function LiveMockInterview({
     );
     const isSinglePerson = setupPersons === 1 && !setupFaceObstructed;
     const isQuiet = setupDecibels < 58;
-    const isReadyToStart = hasLiveCamera && isSinglePerson && !calibrating;
+    const isReadyToStart = hasLiveCamera && (isSinglePerson || overrideChecked) && !calibrating;
 
     return (
       <div style={{ maxWidth: 960, margin: '1.5rem auto', padding: '0 1rem' }}>
@@ -1061,35 +1102,193 @@ export default function LiveMockInterview({
                 </div>
               )}
 
-              {/* Live Person Status Badge Overlay */}
+              {/* Dynamic Real-Time Face Alignment & Target Tracking Overlay */}
+              {streamRef.current && hasLiveCamera && (
+                <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                  {setupVisualMetrics.faces && setupVisualMetrics.faces.length > 0 ? (
+                    setupVisualMetrics.faces.map((face, fIdx) => (
+                      <div
+                        key={fIdx}
+                        style={{
+                          position: 'absolute',
+                          left: `${face.x * 100}%`,
+                          top: `${face.y * 100}%`,
+                          width: `${face.width * 100}%`,
+                          height: `${face.height * 100}%`,
+                          border: `2px solid ${face.isSecondary ? 'rgba(244, 63, 94, 0.9)' : 'rgba(16, 185, 129, 0.9)'}`,
+                          borderRadius: '12px',
+                          boxShadow: `0 0 16px ${face.isSecondary ? 'rgba(244, 63, 94, 0.45)' : 'rgba(16, 185, 129, 0.45)'}`,
+                          transition: 'all 0.12s ease-out'
+                        }}
+                      >
+                        <span style={{
+                          position: 'absolute',
+                          top: -24,
+                          left: 0,
+                          background: face.isSecondary ? 'rgba(244, 63, 94, 0.95)' : 'rgba(16, 185, 129, 0.95)',
+                          color: '#ffffff',
+                          fontSize: '0.68rem',
+                          fontWeight: 800,
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          letterSpacing: '0.02em',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          {face.isSecondary ? '⚠️ Additional Person' : `Candidate Face • ${face.confidence || 95}%`}
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    /* Subtle Alignment Guide Oval when searching */
+                    <div style={{
+                      position: 'absolute',
+                      top: '14%',
+                      left: '28%',
+                      width: '44%',
+                      height: '66%',
+                      border: '2px dashed rgba(255, 255, 255, 0.3)',
+                      borderRadius: '50%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'rgba(0, 0, 0, 0.15)'
+                    }}>
+                      <span style={{ fontSize: '0.72rem', color: 'rgba(255, 255, 255, 0.75)', fontWeight: 600 }}>
+                        Align Face Within Oval
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Live Status HUD Header Overlay */}
               {streamRef.current && hasLiveCamera && (
                 <div style={{
                   position: 'absolute',
-                  top: 12,
-                  left: 12,
+                  top: 10,
+                  left: 10,
+                  right: 10,
                   display: 'flex',
+                  justifyContent: 'space-between',
                   alignItems: 'center',
-                  gap: '0.4rem',
-                  padding: '0.35rem 0.75rem',
-                  borderRadius: 'var(--radius-full)',
-                  background: isSinglePerson ? 'rgba(16, 185, 129, 0.85)' : 'rgba(244, 63, 94, 0.85)',
-                  color: '#ffffff',
-                  fontSize: '0.78rem',
-                  fontWeight: 700,
-                  backdropFilter: 'blur(8px)'
+                  pointerEvents: 'none'
                 }}>
-                  <Users size={14} />
-                  <span>
-                    {setupFaceObstructed
-                      ? 'Camera Obstructed'
-                      : setupPersons === 1
-                        ? '1 Candidate Verified'
-                        : setupPersons > 1
-                          ? `ALERT: ${setupPersons} Persons in Frame`
-                          : 'Align Face in Camera Frame'}
-                  </span>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                    padding: '0.3rem 0.65rem',
+                    borderRadius: 'var(--radius-full)',
+                    background: isSinglePerson ? 'rgba(16, 185, 129, 0.9)' : 'rgba(244, 63, 94, 0.9)',
+                    color: '#ffffff',
+                    fontSize: '0.75rem',
+                    fontWeight: 800,
+                    backdropFilter: 'blur(8px)'
+                  }}>
+                    <Users size={13} />
+                    <span>
+                      {setupFaceObstructed
+                        ? 'Camera Obstructed'
+                        : setupPersons === 1
+                          ? '1 Candidate Verified'
+                          : setupPersons > 1
+                            ? `ALERT: ${setupPersons} Persons in Frame`
+                            : 'Position Face in Frame'}
+                    </span>
+                  </div>
+
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                    padding: '0.3rem 0.65rem',
+                    borderRadius: 'var(--radius-full)',
+                    background: 'rgba(15, 23, 42, 0.85)',
+                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                    color: setupVisualMetrics.lightingCondition === 'DIM' ? 'var(--accent-amber)' : 'var(--text-primary)',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    backdropFilter: 'blur(8px)'
+                  }}>
+                    <Sun size={12} color={setupVisualMetrics.lightingCondition === 'DIM' ? 'var(--accent-amber)' : 'var(--accent-emerald)'} />
+                    <span>
+                      {setupVisualMetrics.lightingCondition === 'DIM'
+                        ? 'Dim Light (Compensated)'
+                        : setupVisualMetrics.lightingCondition === 'OVEREXPOSED'
+                          ? 'Bright Lighting'
+                          : 'Optimal Lighting'}
+                    </span>
+                  </div>
                 </div>
               )}
+            </div>
+
+            {/* AI Camera Sensitivity & Calibration Toolbar */}
+            <div style={{
+              marginTop: '0.85rem',
+              padding: '0.85rem 1rem',
+              background: 'var(--bg-surface-elevated)',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--border-subtle)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.65rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                  <Sliders size={14} color="var(--primary)" />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>AI Proctor Sensitivity</span>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.3rem', background: 'var(--bg-surface)', padding: '2px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                  {[
+                    { id: 'RELAXED', label: '🌿 Relaxed (Dim / Home)', desc: 'Higher tolerance for warm/dim lighting & background furniture' },
+                    { id: 'STANDARD', label: '🛡️ Standard', desc: 'Balanced detection for normal desk environments' },
+                    { id: 'STRICT', label: '⚖️ Strict', desc: 'Rigorous exam-grade tolerances' }
+                  ].map((mode) => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => handleSensitivityChange(mode.id)}
+                      style={{
+                        padding: '0.25rem 0.6rem',
+                        borderRadius: 'var(--radius-sm)',
+                        border: 'none',
+                        fontSize: '0.72rem',
+                        fontWeight: proctorSensitivity === mode.id ? 800 : 500,
+                        background: proctorSensitivity === mode.id ? 'var(--primary)' : 'transparent',
+                        color: proctorSensitivity === mode.id ? '#ffffff' : 'var(--text-secondary)',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease'
+                      }}
+                      title={mode.desc}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.74rem', color: 'var(--text-secondary)', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <span>
+                  {proctorSensitivity === 'RELAXED'
+                    ? '✓ Relaxed mode active: ideal for home setups, warm lighting, or headphones.'
+                    : proctorSensitivity === 'STRICT'
+                      ? '✓ Strict mode active: high sensitivity proctoring.'
+                      : '✓ Standard mode active: balanced face geometry tracking.'}
+                </span>
+
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleCalibrateLighting}
+                  disabled={calibratingLighting || !hasLiveCamera}
+                  style={{ fontSize: '0.72rem', padding: '0.2rem 0.55rem', gap: '0.35rem' }}
+                >
+                  <Sparkles size={12} color="var(--primary)" />
+                  <span>{calibratingLighting ? 'Calibrating...' : 'Auto-Calibrate Lighting'}</span>
+                </button>
+              </div>
             </div>
 
             {/* Camera Options & Switcher Bar */}
@@ -1272,37 +1471,16 @@ export default function LiveMockInterview({
                     <span>Camera Permission Mandatory to Begin Interview</span>
                   </button>
                 </>
-              ) : !isSinglePerson ? (
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-lg"
-                  disabled
-                  style={{
-                    width: '100%',
-                    padding: '0.95rem',
-                    fontWeight: 800,
-                    fontSize: '0.95rem',
-                    gap: '0.5rem',
-                    opacity: 0.75,
-                    cursor: 'not-allowed',
-                    color: 'var(--accent-rose)',
-                    borderColor: 'rgba(244, 63, 94, 0.4)'
-                  }}
-                >
-                  <AlertCircle size={19} />
-                  <span>
-                    {setupFaceObstructed
-                      ? 'Camera Lens Blocked - Clear Obstruction to Proceed'
-                      : setupPersons > 1
-                        ? 'Multiple Persons Detected - Ensure You Are Alone'
-                        : 'Align Face in Camera Frame to Proceed'}
-                  </span>
-                </button>
-              ) : (
+              ) : (isSinglePerson || overrideChecked) ? (
                 <button
                   type="button"
                   className="btn btn-primary btn-lg"
-                  onClick={() => setHardwareVerified(true)}
+                  onClick={() => {
+                    if (overrideChecked && proctorSensitivity === 'STANDARD') {
+                      handleSensitivityChange('RELAXED');
+                    }
+                    setHardwareVerified(true);
+                  }}
                   style={{
                     width: '100%',
                     padding: '0.95rem',
@@ -1316,14 +1494,64 @@ export default function LiveMockInterview({
                   <ShieldCheck size={19} />
                   <span>Confirm & Begin Proctored Rehearsal</span>
                 </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-lg"
+                    disabled
+                    style={{
+                      width: '100%',
+                      padding: '0.95rem',
+                      fontWeight: 800,
+                      fontSize: '0.95rem',
+                      gap: '0.5rem',
+                      opacity: 0.85,
+                      cursor: 'not-allowed',
+                      color: 'var(--accent-rose)',
+                      borderColor: 'rgba(244, 63, 94, 0.4)'
+                    }}
+                  >
+                    <AlertCircle size={19} />
+                    <span>
+                      {setupFaceObstructed
+                        ? 'Camera Lens Blocked - Clear Obstruction to Proceed'
+                        : setupPersons > 1
+                          ? 'Multiple Persons Detected - Ensure You Are Alone'
+                          : 'Align Face in Camera Frame to Proceed'}
+                    </span>
+                  </button>
+
+                  {/* Grace bypass acknowledgement for challenging ambient lighting */}
+                  <div style={{
+                    padding: '0.75rem 0.9rem',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '0.65rem'
+                  }}>
+                    <input
+                      type="checkbox"
+                      id="proctorBypassCheckbox"
+                      checked={overrideChecked}
+                      onChange={(e) => setOverrideChecked(e.target.checked)}
+                      style={{ marginTop: 3, cursor: 'pointer' }}
+                    />
+                    <label htmlFor="proctorBypassCheckbox" style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', cursor: 'pointer', lineHeight: 1.45 }}>
+                      <strong>Acknowledge Lighting / Framing:</strong> I confirm I am alone in a private room and my webcam is active. Switch to <em>Relaxed Sensitivity</em> and proceed.
+                    </label>
+                  </div>
+                </>
               )}
 
               <div style={{ textAlign: 'center', fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '0.25rem' }}>
                 {!hasLiveCamera
                   ? 'Physical camera permission is strictly required for candidate identity verification.'
-                  : !isSinglePerson
-                    ? 'Please face the camera directly with good lighting. No other individuals are permitted in view.'
-                    : 'System verification complete. Click Confirm to launch your proctored session.'}
+                  : (isSinglePerson || overrideChecked)
+                    ? 'System verification complete. Click Confirm to launch your proctored session.'
+                    : 'Please face the camera directly with good lighting, or adjust sensitivity mode above.'}
               </div>
             </div>
           </div>
@@ -1995,6 +2223,43 @@ export default function LiveMockInterview({
               onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})}
               className="camera-video"
             />
+
+            {/* Real-time Dynamic Face Tracking Overlay during Interview */}
+            {streamRef.current && liveTelemetry.faces && liveTelemetry.faces.length > 0 && (
+              <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                {liveTelemetry.faces.map((face, fIdx) => (
+                  <div
+                    key={fIdx}
+                    style={{
+                      position: 'absolute',
+                      left: `${face.x * 100}%`,
+                      top: `${face.y * 100}%`,
+                      width: `${face.width * 100}%`,
+                      height: `${face.height * 100}%`,
+                      border: `2px solid ${face.isSecondary ? 'rgba(244, 63, 94, 0.9)' : 'rgba(16, 185, 129, 0.85)'}`,
+                      borderRadius: '10px',
+                      boxShadow: `0 0 14px ${face.isSecondary ? 'rgba(244, 63, 94, 0.45)' : 'rgba(16, 185, 129, 0.35)'}`,
+                      transition: 'all 0.12s ease-out'
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute',
+                      top: -22,
+                      left: 0,
+                      background: face.isSecondary ? 'rgba(244, 63, 94, 0.95)' : 'rgba(16, 185, 129, 0.95)',
+                      color: '#ffffff',
+                      fontSize: '0.65rem',
+                      fontWeight: 800,
+                      padding: '1px 6px',
+                      borderRadius: '4px',
+                      whiteSpace: 'nowrap'
+                    }}>
+                      {face.isSecondary ? '⚠️ Extra Person' : `Candidate • ${face.confidence || 95}%`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Virtual Candidate Placeholder if Camera stream is not active */}
             {!streamRef.current && (

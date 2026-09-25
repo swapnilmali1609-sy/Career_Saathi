@@ -18,7 +18,13 @@ import {
 } from 'lucide-react';
 import { DOMAIN_GROUPS, ALL_DOMAINS } from '../../constants/domains.js';
 import { ROLE_PROFILES, getRoleProfile } from '../../constants/roleConfigs.js';
-import { PROGRAMMING_LANGUAGES, getDefaultLanguageForRole, getLanguageProfile } from '../../constants/languages.js';
+import {
+  PROGRAMMING_LANGUAGES,
+  getDefaultLanguageForRole,
+  getLanguageProfile,
+  getLanguagesForRole,
+  isLanguageAllowedForRole
+} from '../../constants/languages.js';
 
 const ROLE_PRESETS = [
   {
@@ -79,6 +85,25 @@ export default function InterviewSetup({ profile, latestResume, resumes = [], on
   const [useResume, setUseResume] = useState(Boolean(latestResume || (resumes && resumes.length > 0)));
   const [selectedResumeId, setSelectedResumeId] = useState(latestResume?.id || (resumes && resumes[0]?.id) || '');
   const [setupError, setSetupError] = useState(null);
+
+  // Dynamically resolve role profile and compatible programming languages
+  const resolvedRoleProfile = getRoleProfile(role, domain);
+  const availableLanguages = React.useMemo(() => {
+    return getLanguagesForRole(role, domain);
+  }, [role, domain]);
+
+  // Synchronize programming language if currently selected language is not supported for this role
+  useEffect(() => {
+    if (!isCustomLanguage) {
+      const isAllowed = availableLanguages.some(
+        l => l.name.toLowerCase() === (programmingLanguage || '').toLowerCase() ||
+             l.id === (programmingLanguage || '').toLowerCase()
+      );
+      if (!isAllowed) {
+        setProgrammingLanguage(getDefaultLanguageForRole(role, domain));
+      }
+    }
+  }, [role, domain, availableLanguages, isCustomLanguage, programmingLanguage]);
 
   // Synchronize resume selection when resumes or latestResume update asynchronously
   useEffect(() => {
@@ -412,22 +437,40 @@ export default function InterviewSetup({ profile, latestResume, resumes = [], on
         {/* Step 3: Primary Programming Language */}
         <div className="card" style={{ marginBottom: '1.75rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-            <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Code2 size={19} color="var(--accent-emerald)" />
-              3. Choose Primary Programming Language
-            </h2>
+            <div>
+              <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Code2 size={19} color="var(--accent-emerald)" />
+                3. Choose Primary Programming Language
+              </h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+                <span style={{
+                  fontSize: '0.74rem',
+                  padding: '0.15rem 0.55rem',
+                  borderRadius: '9999px',
+                  background: 'rgba(56, 189, 248, 0.12)',
+                  color: 'var(--primary)',
+                  fontWeight: 600,
+                  border: '1px solid rgba(56, 189, 248, 0.28)'
+                }}>
+                  Filtered for {resolvedRoleProfile?.title || role}
+                </span>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>
+                  ({availableLanguages.length} language{availableLanguages.length === 1 ? '' : 's'} calibrated)
+                </span>
+              </div>
+            </div>
             <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>
               Technical questions & syntax will be calibrated to this language
             </span>
           </div>
 
-          {/* Quick Select Popular Languages */}
+          {/* Quick Select Popular Languages for this Role */}
           <div style={{ marginBottom: '1.25rem' }}>
             <label className="form-label" style={{ fontSize: '0.82rem', color: 'var(--text-tertiary)', marginBottom: '0.5rem', display: 'block' }}>
-              Popular Languages for this Track:
+              Recommended Languages for {resolvedRoleProfile?.title || role}:
             </label>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(185px, 1fr))', gap: '0.65rem' }}>
-              {PROGRAMMING_LANGUAGES.filter(l => l.popular).map((lang) => {
+              {(availableLanguages.some(l => l.popular) ? availableLanguages.filter(l => l.popular) : availableLanguages).map((lang) => {
                 const isSelected = !isCustomLanguage && (
                   programmingLanguage.toLowerCase() === lang.name.toLowerCase() ||
                   programmingLanguage.toLowerCase().includes(lang.id)
@@ -472,7 +515,7 @@ export default function InterviewSetup({ profile, latestResume, resumes = [], on
           {/* Full Language Selector & Custom Language */}
           <div className="grid-2">
             <div className="form-group">
-              <label className="form-label">All Supported Languages</label>
+              <label className="form-label">Supported Languages for this Role</label>
               <select
                 className="form-select"
                 value={isCustomLanguage ? 'custom' : programmingLanguage}
@@ -485,7 +528,7 @@ export default function InterviewSetup({ profile, latestResume, resumes = [], on
                   }
                 }}
               >
-                {PROGRAMMING_LANGUAGES.map((l) => (
+                {availableLanguages.map((l) => (
                   <option key={l.id} value={l.name}>
                     {l.icon} {l.name} — {l.tag}
                   </option>

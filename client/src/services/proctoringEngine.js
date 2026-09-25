@@ -1,11 +1,64 @@
 /**
  * High-Performance Automated Proctoring Engine
  * 
- * Provides real-time computer vision and acoustic telemetry:
- * 1. Visual Proctor: Multiple persons detection, candidate absence, camera lens contact/obstruction.
- * 2. Acoustic Proctor: Ambient noise calibration, real-time dB calculation, background noise & secondary voice detection.
- * 3. Incident Capture: Generates evidence snapshot upon proctoring breach.
+ * Powered by:
+ * 1. Google MediaPipe BlazeFace Neural Network (Deep Learning Face Detector running client-side via WASM/WebGL)
+ * 2. Chromium Native FaceDetector API (when supported)
+ * 3. Multi-Spectral Computer Vision & Edge Gradient Analyzer (instantaneous zero-latency fallback)
+ * 4. Acoustic Proctor: Ambient noise calibration, real-time dB calculation, background chatter detection
+ * 5. Incident Capture: Generates evidence snapshot upon verified proctoring breach
  */
+
+import { FaceDetector, FilesetResolver } from '@mediapipe/tasks-vision';
+
+let mediaPipeDetectorPromise = null;
+let mediaPipeDetectorInstance = null;
+
+/**
+ * Singleton factory for Google MediaPipe BlazeFace Detector.
+ * Loads WASM and TFLite model locally from /wasm and /models (100% offline).
+ */
+export async function getMediaPipeFaceDetector() {
+  if (mediaPipeDetectorInstance) return mediaPipeDetectorInstance;
+  if (!mediaPipeDetectorPromise) {
+    mediaPipeDetectorPromise = (async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks('/wasm');
+        // Attempt GPU acceleration first for maximum FPS
+        try {
+          const detector = await FaceDetector.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: '/models/blaze_face_short_range.tflite',
+              delegate: 'GPU'
+            },
+            runningMode: 'VIDEO',
+            minDetectionConfidence: 0.52,
+            minSuppressionThreshold: 0.35
+          });
+          mediaPipeDetectorInstance = detector;
+          return detector;
+        } catch (gpuErr) {
+          // Fallback to CPU WASM delegate if WebGL/GPU is unavailable
+          const detector = await FaceDetector.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: '/models/blaze_face_short_range.tflite',
+              delegate: 'CPU'
+            },
+            runningMode: 'VIDEO',
+            minDetectionConfidence: 0.52,
+            minSuppressionThreshold: 0.35
+          });
+          mediaPipeDetectorInstance = detector;
+          return detector;
+        }
+      } catch (err) {
+        console.warn('[MediaPipe FaceDetector] Initialization error:', err?.message || err);
+        return null;
+      }
+    })();
+  }
+  return mediaPipeDetectorPromise;
+}
 
 export class AcousticProctor {
   constructor(stream) {
@@ -40,7 +93,6 @@ export class AcousticProctor {
     }
   }
 
-  // Calibrate ambient room noise floor over specified duration (fast 350ms default)
   async calibrateBaseline(durationMs = 350) {
     if (!this.analyser) return 30;
     const samples = [];
@@ -55,7 +107,6 @@ export class AcousticProctor {
           clearInterval(interval);
           if (samples.length > 0) {
             const sorted = samples.sort((a, b) => a - b);
-            // Use 25th percentile as true ambient floor
             const p25 = sorted[Math.floor(sorted.length * 0.25)] || 30;
             this.baselineNoiseFloor = Math.max(20, Math.min(55, Math.round(p25)));
           }
@@ -81,18 +132,15 @@ export class AcousticProctor {
       const normalized = this.dataArray[i] / 255;
       sumSquares += normalized * normalized;
 
-      // Track high-frequency/ambient chatter bands (> 1.2 kHz)
       if (i > totalBins * 0.4) {
         highFreqEnergy += normalized;
       }
     }
 
     const rms = Math.sqrt(sumSquares / totalBins);
-    // Convert RMS to an estimated dB scale (30 - 95 dB SPL equivalent)
     const decibels = Math.round(Math.max(20, Math.min(95, 20 + rms * 80)));
     const volumePercent = Math.round(Math.min(100, rms * 150));
 
-    // Dynamic thresholds relative to baseline noise
     const warningThreshold = Math.max(58, this.baselineNoiseFloor + 26);
     const criticalThreshold = Math.max(72, this.baselineNoiseFloor + 38);
 
@@ -119,22 +167,43 @@ export class AcousticProctor {
   }
 }
 
+/**
+ * VisualProctor
+ * Deep Learning face detection via Google MediaPipe BlazeFace
+ * with 100% offline WASM inference and multi-spectral fallback.
+ */
 export class VisualProctor {
-  constructor(videoElement) {
+  constructor(videoElement, options = {}) {
     this.videoElement = videoElement;
+    this.sensitivity = options.sensitivity || 'STANDARD'; // 'RELAXED', 'STANDARD', 'STRICT'
+    this.mpDetector = null;
     this.nativeDetector = null;
     this.canvas = document.createElement('canvas');
-    this.canvas.width = 160;
-    this.canvas.height = 120;
+    this.canvas.width = 240;
+    this.canvas.height = 180;
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
-    this.history = []; // 3-frame rolling consensus filter
+    this.history = []; // 5-frame rolling consensus filter
     this.detectorInitialized = false;
+    this.lastVideoTime = -1;
+    this.smoothedPrimaryFace = null;
 
-    this.initNativeDetector();
+    this.initDetectors();
   }
 
-  async initNativeDetector() {
+  setSensitivity(mode) {
+    if (['RELAXED', 'STANDARD', 'STRICT'].includes(mode)) {
+      this.sensitivity = mode;
+    }
+  }
+
+  async initDetectors() {
     if (this.detectorInitialized) return;
+    // 1. Initialize MediaPipe BlazeFace (Primary Neural Network)
+    getMediaPipeFaceDetector().then((detector) => {
+      this.mpDetector = detector;
+    }).catch(() => {});
+
+    // 2. Initialize Chromium Native Shape Detection API if present
     if (typeof window !== 'undefined' && 'FaceDetector' in window) {
       try {
         this.nativeDetector = new window.FaceDetector({
@@ -148,59 +217,215 @@ export class VisualProctor {
     this.detectorInitialized = true;
   }
 
+  async calibrateEnvironment() {
+    if (!this.videoElement || this.videoElement.readyState < 2) return 100;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    try {
+      this.ctx.drawImage(this.videoElement, 0, 0, w, h);
+      const imgData = this.ctx.getImageData(0, 0, w, h);
+      const data = imgData.data;
+      let sumY = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        sumY += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      }
+      return Math.round(sumY / (w * h));
+    } catch (e) {
+      return 100;
+    }
+  }
+
   async analyzeFrame() {
     if (!this.videoElement || this.videoElement.readyState < 2) {
       return {
-        detectedPersons: 1, // default standby until ready
+        detectedPersons: 1,
         isMultiplePersons: false,
         isCameraObstructed: false,
         isCandidatePresent: true,
-        faces: [],
-        confidence: 0
+        faces: [{ x: 0.25, y: 0.15, width: 0.50, height: 0.65, confidence: 95 }],
+        confidence: 95,
+        lightingCondition: 'OPTIMAL',
+        avgBrightness: 100,
+        sensitivity: this.sensitivity,
+        method: 'STANDBY'
       };
     }
 
-    // Always compute canvas metrics for lighting & obstruction verification
-    const cvMetrics = this.canvasComputerVisionAnalysis();
+    // Always compute basic illumination & obstruction metrics
+    const cvMetrics = this.canvasLightingAnalysis();
 
-    // Layer 1: Native Chromium FaceDetector if supported and camera not obstructed
-    if (this.nativeDetector && !cvMetrics.isCameraObstructed) {
+    if (cvMetrics.isCameraObstructed) {
+      return this.applyTemporalFilter({
+        detectedPersons: 0,
+        isMultiplePersons: false,
+        isCameraObstructed: true,
+        isCandidatePresent: false,
+        faces: [],
+        confidence: 0,
+        lightingCondition: 'OBSTRUCTED',
+        avgBrightness: cvMetrics.avgBrightness,
+        stdDev: cvMetrics.stdDev,
+        method: 'CAMERA_OBSTRUCTED',
+        sensitivity: this.sensitivity
+      });
+    }
+
+    // LAYER 1: Google MediaPipe BlazeFace Deep Learning Inference
+    if (this.mpDetector) {
+      try {
+        const currentTime = performance.now();
+        const results = this.mpDetector.detectForVideo(this.videoElement, currentTime);
+
+        if (results && results.detections) {
+          const vw = this.videoElement.videoWidth || 640;
+          const vh = this.videoElement.videoHeight || 480;
+
+          // Parse and normalize detections
+          const parsedFaces = results.detections.map((d) => {
+            const box = d.boundingBox;
+            const score = d.categories?.[0]?.score || 0.9;
+            return {
+              x: Math.max(0, Math.min(1, box.originX / vw)),
+              y: Math.max(0, Math.min(1, box.originY / vh)),
+              width: Math.min(1, box.width / vw),
+              height: Math.min(1, box.height / vh),
+              confidence: Math.round(score * 100)
+            };
+          });
+
+          // Filter out tiny background slivers or posters (must be >= 6% width and >= 8% height)
+          const validFaces = parsedFaces.filter(f => f.width >= 0.06 && f.height >= 0.08);
+
+          if (validFaces.length > 0) {
+            // Sort by area (largest face is candidate)
+            validFaces.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+            const primary = validFaces[0];
+
+            // Smooth candidate face box
+            if (!this.smoothedPrimaryFace) {
+              this.smoothedPrimaryFace = { ...primary };
+            } else {
+              this.smoothedPrimaryFace = {
+                x: this.smoothedPrimaryFace.x * 0.70 + primary.x * 0.30,
+                y: this.smoothedPrimaryFace.y * 0.70 + primary.y * 0.30,
+                width: this.smoothedPrimaryFace.width * 0.70 + primary.width * 0.30,
+                height: this.smoothedPrimaryFace.height * 0.70 + primary.height * 0.30,
+                confidence: primary.confidence
+              };
+            }
+
+            const formattedFaces = [this.smoothedPrimaryFace];
+
+            // Check if there is an actual second person
+            let hasMultiple = false;
+            if (validFaces.length > 1) {
+              for (let i = 1; i < validFaces.length; i++) {
+                const second = validFaces[i];
+                // Measure center distance
+                const pCenterX = primary.x + primary.width / 2;
+                const sCenterX = second.x + second.width / 2;
+                const distCenter = Math.abs(sCenterX - pCenterX);
+
+                // In RELAXED mode: require distance >= 20% and area >= 1.5%
+                const minDistance = this.sensitivity === 'RELAXED' ? 0.22 : 0.16;
+                const minConfidence = this.sensitivity === 'RELAXED' ? 65 : 55;
+
+                if (distCenter >= minDistance && second.confidence >= minConfidence) {
+                  hasMultiple = true;
+                  formattedFaces.push({ ...second, isSecondary: true });
+                }
+              }
+            }
+
+            const raw = {
+              detectedPersons: hasMultiple ? Math.max(2, validFaces.length) : 1,
+              isMultiplePersons: hasMultiple,
+              isCameraObstructed: false,
+              isCandidatePresent: true,
+              faces: formattedFaces,
+              confidence: primary.confidence,
+              lightingCondition: cvMetrics.lightingCondition,
+              avgBrightness: cvMetrics.avgBrightness,
+              stdDev: cvMetrics.stdDev,
+              method: 'MEDIAPIPE_BLAZEFACE_AI',
+              sensitivity: this.sensitivity
+            };
+
+            return this.applyTemporalFilter(raw);
+          } else {
+            // No valid face found by MediaPipe in this frame
+            const raw = {
+              detectedPersons: 0,
+              isMultiplePersons: false,
+              isCameraObstructed: false,
+              isCandidatePresent: false,
+              faces: [],
+              confidence: 0,
+              lightingCondition: cvMetrics.lightingCondition,
+              avgBrightness: cvMetrics.avgBrightness,
+              stdDev: cvMetrics.stdDev,
+              method: 'MEDIAPIPE_NO_FACE',
+              sensitivity: this.sensitivity
+            };
+            return this.applyTemporalFilter(raw);
+          }
+        }
+      } catch (mpErr) {
+        // Fall through to native detector or Canvas CV
+      }
+    }
+
+    // LAYER 2: Native Chromium FaceDetector API (when available)
+    if (this.nativeDetector) {
       try {
         const nativeFaces = await this.nativeDetector.detect(this.videoElement);
         if (nativeFaces && nativeFaces.length > 0) {
           const vw = this.videoElement.videoWidth || 640;
           const vh = this.videoElement.videoHeight || 480;
-          const formattedFaces = nativeFaces.map(f => ({
-            x: f.boundingBox.x / vw,
-            y: f.boundingBox.y / vh,
-            width: f.boundingBox.width / vw,
-            height: f.boundingBox.height / vh
-          }));
 
-          const raw = {
-            detectedPersons: nativeFaces.length,
-            isMultiplePersons: nativeFaces.length > 1,
-            isCameraObstructed: false,
-            isCandidatePresent: true,
-            skinRatio: cvMetrics.skinRatio,
-            avgBrightness: cvMetrics.avgBrightness,
-            faces: formattedFaces,
-            method: 'NATIVE_FACE_DETECTOR'
-          };
-          return this.applyTemporalFilter(raw);
+          const validNative = nativeFaces.filter(f => {
+            const fw = f.boundingBox.width / vw;
+            const fh = f.boundingBox.height / vh;
+            return fw >= 0.07 && fh >= 0.09;
+          });
+
+          if (validNative.length > 0) {
+            const formatted = validNative.map(f => ({
+              x: f.boundingBox.x / vw,
+              y: f.boundingBox.y / vh,
+              width: f.boundingBox.width / vw,
+              height: f.boundingBox.height / vh,
+              confidence: 96
+            }));
+
+            const hasMultiple = validNative.length > 1;
+
+            return this.applyTemporalFilter({
+              detectedPersons: hasMultiple ? validNative.length : 1,
+              isMultiplePersons: hasMultiple,
+              isCameraObstructed: false,
+              isCandidatePresent: true,
+              faces: formatted,
+              confidence: 96,
+              lightingCondition: cvMetrics.lightingCondition,
+              avgBrightness: cvMetrics.avgBrightness,
+              stdDev: cvMetrics.stdDev,
+              method: 'NATIVE_FACE_DETECTOR',
+              sensitivity: this.sensitivity
+            });
+          }
         }
-      } catch (e) {
-        // Fall back to Canvas CV segmentation
-      }
+      } catch (nativeErr) {}
     }
 
-    // Layer 2: Fast HTML5 Canvas Computer-Vision Segmentation & Blob Clustering
+    // LAYER 3: Multi-Spectral & Edge-Gradient Computer Vision Segmentation
     return this.applyTemporalFilter(cvMetrics);
   }
 
-  canvasComputerVisionAnalysis() {
-    const w = this.canvas.width;  // 160
-    const h = this.canvas.height; // 120
+  // Fast lighting, obstruction and multi-spectral edge geometry segmentation
+  canvasLightingAnalysis() {
+    const w = this.canvas.width;  // 240
+    const h = this.canvas.height; // 180
 
     try {
       this.ctx.drawImage(this.videoElement, 0, 0, w, h);
@@ -213,65 +438,35 @@ export class VisualProctor {
       let skinPixels = 0;
       let centralSkinPixels = 0;
 
-      // 16 horizontal bands (10px wide each)
-      const cols = 16;
-      const rows = 12;
-      const cellWidth = w / cols;
-      const cellHeight = h / rows;
-      // Grid to track skin presence across spatial cells (16 cols x 12 rows)
-      const grid = new Uint8Array(cols * rows);
+      const cols = 24;
+      const rows = 18;
+      const cellW = w / cols;
+      const cellH = h / rows;
+      const gridSkin = new Uint16Array(cols * rows);
+      const gridEdges = new Uint16Array(cols * rows);
+      const grayBuffer = new Uint8Array(totalPixels);
 
-      for (let i = 0; i < data.length; i += 4) {
+      for (let i = 0, pIdx = 0; i < data.length; i += 4, pIdx++) {
         const r = data[i];
         const g = data[i + 1];
         const b = data[i + 2];
-
-        // Luminance Y
         const y = 0.299 * r + 0.587 * g + 0.114 * b;
+        grayBuffer[pIdx] = y;
         sumY += y;
         sumYSquares += y * y;
-
-        // Normalized color coordinates
-        const sumRgb = r + g + b;
-        const rn = sumRgb > 0 ? r / sumRgb : 0;
-        const gn = sumRgb > 0 ? g / sumRgb : 0;
-
-        // YCbCr skin chrominance
-        const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
-        const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
-
-        // Adaptive skin classification: works in standard, warm, or dim lighting (Y >= 18)
-        const isYCbCrSkin = cb >= 75 && cb <= 132 && cr >= 130 && cr <= 175 && y >= 18;
-        const isNormRgbSkin = rn >= 0.33 && rn <= 0.60 && gn >= 0.24 && gn <= 0.38 && r > g && g > (b * 0.7) && y >= 18;
-        const isSkin = isYCbCrSkin || isNormRgbSkin;
-
-        if (isSkin) {
-          skinPixels++;
-          const pIdx = i >> 2;
-          const px = pIdx % w;
-          const py = Math.floor(pIdx / w);
-
-          // Central ROI: candidate head usually in center 60%
-          if (px >= w * 0.2 && px <= w * 0.8 && py >= h * 0.1 && py <= h * 0.85) {
-            centralSkinPixels++;
-          }
-
-          const col = Math.min(cols - 1, Math.floor(px / cellWidth));
-          const row = Math.min(rows - 1, Math.floor(py / cellHeight));
-          grid[row * cols + col]++;
-        }
       }
 
-      const avgBrightness = sumY / totalPixels;
+      const avgBrightness = Math.round(sumY / totalPixels);
       const variance = Math.max(0, (sumYSquares / totalPixels) - (avgBrightness * avgBrightness));
-      const stdDev = Math.sqrt(variance);
-      const skinRatio = skinPixels / totalPixels;
+      const stdDev = Math.round(Math.sqrt(variance) * 10) / 10;
 
-      // Smart Lens Obstruction Check:
-      // A covered lens / finger / black tape has either:
-      // 1. Almost zero light: avgBrightness < 6
-      // 2. Or very flat uniform darkness: avgBrightness < 30 AND stdDev < 1.8
-      const isCameraObstructed = avgBrightness < 6 || (avgBrightness < 30 && stdDev < 1.8);
+      let lightingCondition = 'OPTIMAL';
+      if (avgBrightness < 35) lightingCondition = 'DIM';
+      else if (avgBrightness < 65) lightingCondition = 'ACCEPTABLE';
+      else if (avgBrightness > 220) lightingCondition = 'OVEREXPOSED';
+
+      // True lens obstruction: extreme flat black (< 4.5 avg, < 0.8 stdDev)
+      const isCameraObstructed = avgBrightness < 4.5 && stdDev < 0.8;
 
       if (isCameraObstructed) {
         return {
@@ -279,140 +474,186 @@ export class VisualProctor {
           isMultiplePersons: false,
           isCameraObstructed: true,
           isCandidatePresent: false,
-          skinRatio: 0,
-          avgBrightness: Math.round(avgBrightness),
-          stdDev: Math.round(stdDev * 10) / 10,
+          faces: [],
+          confidence: 0,
+          lightingCondition: 'OBSTRUCTED',
+          avgBrightness,
+          stdDev,
           method: 'CANVAS_CV_OBSTRUCTED',
-          faces: []
+          sensitivity: this.sensitivity
         };
       }
 
-      // Cluster Grid Analysis: Group active skin cells into spatial components
-      // Cell threshold: at least 14 pixels (out of ~100) are skin (14% skin density)
-      const activeCellThreshold = 14;
-      const activeCells = new Uint8Array(cols * rows);
-      for (let c = 0; c < activeCells.length; c++) {
-        if (grid[c] >= activeCellThreshold) activeCells[c] = 1;
-      }
+      const lowLightBoost = avgBrightness < 55 ? Math.min(1.8, 55 / Math.max(18, avgBrightness)) : 1.0;
 
-      // Find horizontal spans of skin in the upper 65% of the screen (head zone)
-      const headZoneRows = Math.min(rows, Math.max(6, Math.floor(rows * 0.65)));
-      const colHeadScores = new Array(cols).fill(0);
-      for (let r = 0; r < headZoneRows; r++) {
-        for (let c = 0; c < cols; c++) {
-          if (activeCells[r * cols + c]) {
-            colHeadScores[c]++;
+      for (let yCoord = 0; yCoord < h; yCoord++) {
+        const rowIdx = Math.min(rows - 1, Math.floor(yCoord / cellH));
+        for (let xCoord = 0; xCoord < w; xCoord++) {
+          const pIdx = yCoord * w + xCoord;
+          const colIdx = Math.min(cols - 1, Math.floor(xCoord / cellW));
+          const cellIndex = rowIdx * cols + colIdx;
+
+          const baseI = pIdx << 2;
+          let r = data[baseI];
+          let g = data[baseI + 1];
+          let b = data[baseI + 2];
+
+          if (lowLightBoost > 1.0) {
+            r = Math.min(255, r * lowLightBoost);
+            g = Math.min(255, g * lowLightBoost);
+            b = Math.min(255, b * lowLightBoost);
+          }
+
+          const yVal = 0.299 * r + 0.587 * g + 0.114 * b;
+          const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+          const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+          const sumRgb = r + g + b + 1;
+          const rn = r / sumRgb;
+          const gn = g / sumRgb;
+
+          const isStandardSkin = cb >= 75 && cb <= 138 && cr >= 128 && cr <= 178 && yVal >= 14;
+          const isDeepMelaninSkin = cb >= 82 && cb <= 146 && cr >= 120 && cr <= 172 && rn > 0.28 && gn > 0.22 && r > (b * 0.70) && yVal >= 8;
+          const isWarmSkin = rn >= 0.32 && rn <= 0.62 && gn >= 0.24 && gn <= 0.40 && r > g && g > (b * 0.60) && yVal >= 12;
+
+          const isSkin = isStandardSkin || isDeepMelaninSkin || isWarmSkin;
+
+          if (isSkin) {
+            skinPixels++;
+            gridSkin[cellIndex]++;
+            if (xCoord >= w * 0.20 && xCoord <= w * 0.80 && yCoord >= h * 0.10 && yCoord <= h * 0.80) {
+              centralSkinPixels++;
+            }
+          }
+
+          if (xCoord > 0 && xCoord < w - 1) {
+            const gradX = Math.abs(grayBuffer[pIdx + 1] - grayBuffer[pIdx - 1]);
+            if (gradX >= 12) gridEdges[cellIndex]++;
           }
         }
       }
 
-      // Identify distinct head clusters in the upper region
-      // A valid head column must have skin in at least 2 vertical cells in upper region
-      const clusterThreshold = 2;
-      const clusters = [];
-      let currentCluster = null;
+      // Group active columns in upper head zone (top 68%)
+      const maxHeadRow = Math.floor(rows * 0.68);
+      const minCellThreshold = this.sensitivity === 'RELAXED' ? 10 : 12;
+      const colScores = new Array(cols).fill(0);
+      const colEdgeScores = new Array(cols).fill(0);
+
+      for (let r = 0; r < maxHeadRow; r++) {
+        for (let c = 0; c < cols; c++) {
+          const idx = r * cols + c;
+          if (gridSkin[idx] >= minCellThreshold) {
+            colScores[c]++;
+            if (gridEdges[idx] >= 6) colEdgeScores[c]++;
+          }
+        }
+      }
+
+      const candidateClusters = [];
+      let activeCluster = null;
 
       for (let c = 0; c < cols; c++) {
-        if (colHeadScores[c] >= clusterThreshold) {
-          if (!currentCluster) {
-            currentCluster = { startCol: c, endCol: c, maxScore: colHeadScores[c], totalScore: colHeadScores[c] };
+        if (colScores[c] >= 2) {
+          if (!activeCluster) {
+            activeCluster = { startCol: c, endCol: c, maxScore: colScores[c], totalScore: colScores[c], edgeScore: colEdgeScores[c] };
           } else {
-            currentCluster.endCol = c;
-            currentCluster.maxScore = Math.max(currentCluster.maxScore, colHeadScores[c]);
-            currentCluster.totalScore += colHeadScores[c];
+            activeCluster.endCol = c;
+            activeCluster.maxScore = Math.max(activeCluster.maxScore, colScores[c]);
+            activeCluster.totalScore += colScores[c];
+            activeCluster.edgeScore += colEdgeScores[c];
           }
         } else {
-          if (currentCluster) {
-            clusters.push(currentCluster);
-            currentCluster = null;
+          if (activeCluster) {
+            candidateClusters.push(activeCluster);
+            activeCluster = null;
           }
         }
       }
-      if (currentCluster) clusters.push(currentCluster);
+      if (activeCluster) candidateClusters.push(activeCluster);
 
-      // Filter clusters to only those that represent a distinct human head:
-      // - Width at least 2 columns (>= 12.5% of frame)
-      // - Score sum at least 5 (substantial head mass)
-      const validHeadClusters = clusters.filter(cl => {
+      // Merge small headphone/hair gaps
+      const mergedClusters = [];
+      for (let i = 0; i < candidateClusters.length; i++) {
+        const cur = candidateClusters[i];
+        if (mergedClusters.length > 0) {
+          const last = mergedClusters[mergedClusters.length - 1];
+          if (cur.startCol - last.endCol - 1 <= 2) {
+            last.endCol = cur.endCol;
+            last.maxScore = Math.max(last.maxScore, cur.maxScore);
+            last.totalScore += cur.totalScore;
+            last.edgeScore += cur.edgeScore;
+            continue;
+          }
+        }
+        mergedClusters.push({ ...cur });
+      }
+
+      const minWidthCols = this.sensitivity === 'RELAXED' ? 4 : 3;
+      const minTotalScore = this.sensitivity === 'RELAXED' ? 10 : 7;
+      const minEdgeScore = this.sensitivity === 'RELAXED' ? 5 : 3;
+
+      const validHeadClusters = mergedClusters.filter(cl => {
         const width = cl.endCol - cl.startCol + 1;
-        return width >= 2 && cl.totalScore >= 5;
+        return width >= minWidthCols && cl.totalScore >= minTotalScore && cl.edgeScore >= minEdgeScore;
       });
 
-      // Multi-Person Detection Check 1: Two separated head clusters with gap >= 1 column
-      let hasTwoSeparatedHeads = false;
-      if (validHeadClusters.length >= 2 && skinRatio >= 0.05) {
-        for (let k = 0; k < validHeadClusters.length - 1; k++) {
-          const gap = validHeadClusters[k + 1].startCol - validHeadClusters[k].endCol - 1;
-          if (gap >= 1) {
-            hasTwoSeparatedHeads = true;
-            break;
-          }
-        }
-      }
+      let primaryHead = null;
+      let secondPersonHead = null;
 
-      // Multi-Person Detection Check 2: Broad merged head span with dual distinct spatial peaks & valley
-      let hasWideDualPeak = false;
-      if (!hasTwoSeparatedHeads && validHeadClusters.length >= 1 && skinRatio >= 0.08) {
-        for (const cl of validHeadClusters) {
-          const clWidth = cl.endCol - cl.startCol + 1;
-          if (clWidth >= 6 && cl.totalScore >= 16) {
-            // Check for two local peaks separated by a trough
-            let peaks = [];
-            for (let c = cl.startCol; c <= cl.endCol; c++) {
-              const score = colHeadScores[c];
-              const prev = c > 0 ? colHeadScores[c - 1] : 0;
-              const next = c < cols - 1 ? colHeadScores[c + 1] : 0;
-              if (score >= 3 && score >= prev && score >= next) {
-                peaks.push({ col: c, score });
-              }
-            }
-            if (peaks.length >= 2 && (peaks[peaks.length - 1].col - peaks[0].col >= 3)) {
-              hasWideDualPeak = true;
+      if (validHeadClusters.length > 0) {
+        const sortedByCenter = [...validHeadClusters].sort((a, b) => {
+          const aCenter = (a.startCol + a.endCol) / 2;
+          const bCenter = (b.startCol + b.endCol) / 2;
+          return Math.abs(aCenter - cols / 2) - Math.abs(bCenter - cols / 2);
+        });
+
+        primaryHead = sortedByCenter[0];
+
+        if (sortedByCenter.length > 1) {
+          for (let k = 1; k < sortedByCenter.length; k++) {
+            const pot = sortedByCenter[k];
+            const pC = (primaryHead.startCol + primaryHead.endCol) / 2;
+            const sC = (pot.startCol + pot.endCol) / 2;
+            const distCols = Math.abs(sC - pC);
+            const secondWidth = pot.endCol - pot.startCol + 1;
+
+            const reqDist = this.sensitivity === 'RELAXED' ? 6 : 5;
+            const reqWidth = this.sensitivity === 'RELAXED' ? 4 : 3;
+
+            if (distCols >= reqDist && secondWidth >= reqWidth && pot.edgeScore >= minEdgeScore + 2) {
+              secondPersonHead = pot;
               break;
             }
           }
         }
       }
 
-      // Multi-Person Detection Check 3: Peripheral Intruder leaning in from left or right border
-      let hasPeripheralIntruder = false;
-      if (!hasTwoSeparatedHeads && !hasWideDualPeak && skinRatio >= 0.06) {
-        const leftBorderActive = colHeadScores[0] >= 2 || colHeadScores[1] >= 2;
-        const rightBorderActive = colHeadScores[cols - 1] >= 2 || colHeadScores[cols - 2] >= 2;
-        const centerActive = colHeadScores[Math.floor(cols / 2)] >= 3 || colHeadScores[Math.floor(cols / 2) - 1] >= 3;
-        if (centerActive && (leftBorderActive || rightBorderActive)) {
-          if (leftBorderActive && (colHeadScores[2] <= 1 || colHeadScores[3] <= 1)) {
-            hasPeripheralIntruder = true;
-          } else if (rightBorderActive && (colHeadScores[cols - 3] <= 1 || colHeadScores[cols - 4] <= 1)) {
-            hasPeripheralIntruder = true;
-          }
-        }
-      }
-
-      const isMultiplePersons = (hasTwoSeparatedHeads || hasWideDualPeak || hasPeripheralIntruder) && !isCameraObstructed;
-
-      // Candidate presence: Candidate is present if there is skin in the central ROI or at least 1 valid head cluster
-      const isCandidatePresent = (centralSkinPixels > (totalPixels * 0.012) || validHeadClusters.length >= 1) && !isCameraObstructed;
+      const isMultiplePersons = secondPersonHead !== null && !isCameraObstructed;
+      const isCandidatePresent = (primaryHead !== null || centralSkinPixels >= (totalPixels * 0.010)) && !isCameraObstructed;
       const detectedPersons = isCameraObstructed ? 0 : isMultiplePersons ? 2 : (isCandidatePresent ? 1 : 0);
 
       const faces = [];
-      if (isCandidatePresent && !isMultiplePersons) {
-        faces.push({ x: 0.25, y: 0.15, width: 0.5, height: 0.65 });
-      } else if (isMultiplePersons) {
-        if (validHeadClusters.length >= 2) {
-          validHeadClusters.forEach(cl => {
-            faces.push({
-              x: cl.startCol / cols,
-              y: 0.15,
-              width: (cl.endCol - cl.startCol + 1) / cols,
-              height: 0.55
-            });
-          });
-        } else {
-          // Dual person split overlay
-          faces.push({ x: 0.1, y: 0.15, width: 0.38, height: 0.55 });
-          faces.push({ x: 0.52, y: 0.15, width: 0.38, height: 0.55 });
-        }
+      if (primaryHead) {
+        const rawBox = {
+          x: Math.max(0.05, primaryHead.startCol / cols),
+          y: 0.12,
+          width: Math.min(0.85, (primaryHead.endCol - primaryHead.startCol + 1) / cols),
+          height: Math.min(0.70, (primaryHead.maxScore / rows) * 1.35),
+          confidence: Math.min(99, Math.round(75 + primaryHead.edgeScore * 2))
+        };
+        faces.push(rawBox);
+      } else if (isCandidatePresent) {
+        faces.push({ x: 0.25, y: 0.15, width: 0.50, height: 0.65, confidence: 85 });
+      }
+
+      if (secondPersonHead) {
+        faces.push({
+          x: secondPersonHead.startCol / cols,
+          y: 0.15,
+          width: (secondPersonHead.endCol - secondPersonHead.startCol + 1) / cols,
+          height: 0.55,
+          confidence: 90,
+          isSecondary: true
+        });
       }
 
       return {
@@ -420,13 +661,16 @@ export class VisualProctor {
         isMultiplePersons,
         isCameraObstructed,
         isCandidatePresent,
-        skinRatio: Math.round(skinRatio * 100),
-        avgBrightness: Math.round(avgBrightness),
-        stdDev: Math.round(stdDev * 10) / 10,
-        method: 'CANVAS_CV_SEGMENTATION',
-        faces
+        skinRatio: Math.round((skinPixels / totalPixels) * 100),
+        avgBrightness,
+        stdDev,
+        lightingCondition,
+        confidence: isCandidatePresent ? (faces[0]?.confidence || 88) : 0,
+        faces,
+        method: 'CANVAS_CV_MULTI_SPECTRAL',
+        sensitivity: this.sensitivity
       };
-    } catch (err) {
+    } catch (e) {
       return {
         detectedPersons: 1,
         isMultiplePersons: false,
@@ -434,30 +678,34 @@ export class VisualProctor {
         isCandidatePresent: true,
         skinRatio: 15,
         avgBrightness: 80,
-        faces: [{ x: 0.25, y: 0.15, width: 0.5, height: 0.65 }],
-        method: 'CANVAS_CV_FALLBACK'
+        stdDev: 20,
+        lightingCondition: 'OPTIMAL',
+        confidence: 85,
+        faces: [{ x: 0.25, y: 0.15, width: 0.50, height: 0.65, confidence: 85 }],
+        method: 'CANVAS_CV_FALLBACK',
+        sensitivity: this.sensitivity
       };
     }
   }
 
-  // 3-frame rolling consensus filter to eliminate transient false alerts
+  // 5-frame rolling consensus filter
   applyTemporalFilter(currentRaw) {
     this.history.push(currentRaw);
-    if (this.history.length > 3) {
+    if (this.history.length > 5) {
       this.history.shift();
     }
 
-    if (this.history.length === 1) {
+    if (this.history.length < 3) {
       return currentRaw;
     }
 
-    // Require majority vote (at least 2 out of 3 frames)
     const multiPersonVotes = this.history.filter(h => h.isMultiplePersons).length;
     const obstructedVotes = this.history.filter(h => h.isCameraObstructed).length;
     const presentVotes = this.history.filter(h => h.isCandidatePresent).length;
 
-    const isMultiplePersons = multiPersonVotes >= 2;
-    const isCameraObstructed = obstructedVotes >= 2;
+    // Require majority vote (at least 3 out of 5 frames)
+    const isMultiplePersons = multiPersonVotes >= 3;
+    const isCameraObstructed = obstructedVotes >= 3;
     const isCandidatePresent = presentVotes >= 2;
 
     const detectedPersons = isCameraObstructed
@@ -480,11 +728,11 @@ export class VisualProctor {
   captureSnapshot() {
     try {
       const snapCanvas = document.createElement('canvas');
-      snapCanvas.width = 360;
-      snapCanvas.height = 270;
+      snapCanvas.width = 480;
+      snapCanvas.height = 360;
       const snapCtx = snapCanvas.getContext('2d');
-      snapCtx.drawImage(this.videoElement, 0, 0, 360, 270);
-      return snapCanvas.toDataURL('image/jpeg', 0.65);
+      snapCtx.drawImage(this.videoElement, 0, 0, 480, 360);
+      return snapCanvas.toDataURL('image/jpeg', 0.70);
     } catch (e) {
       return null;
     }
@@ -494,6 +742,7 @@ export class VisualProctor {
     this.ctx = null;
     this.canvas = null;
     this.history = [];
+    this.smoothedPrimaryFace = null;
   }
 }
 
@@ -505,49 +754,50 @@ export class ProctoringCoordinator {
   constructor({
     videoElement,
     mediaStream,
+    sensitivity = 'STANDARD',
     onTelemetryUpdate,
     onWarning,
     onViolation
   }) {
     this.videoElement = videoElement;
     this.mediaStream = mediaStream;
+    this.sensitivity = sensitivity;
     this.onTelemetryUpdate = onTelemetryUpdate;
     this.onWarning = onWarning;
     this.onViolation = onViolation;
 
     this.acousticProctor = new AcousticProctor(mediaStream);
-    this.visualProctor = new VisualProctor(videoElement);
+    this.visualProctor = new VisualProctor(videoElement, { sensitivity });
 
     this.timerId = null;
     this.isEnforcing = false;
 
-    // Violation persistence trackers to prevent single-frame false positives
     this.multiPersonConsecutiveFrames = 0;
     this.obstructionConsecutiveFrames = 0;
     this.candidateAbsentConsecutiveFrames = 0;
     this.highNoiseConsecutiveTicks = 0;
   }
 
+  setSensitivity(mode) {
+    this.sensitivity = mode;
+    if (this.visualProctor) {
+      this.visualProctor.setSensitivity(mode);
+    }
+  }
+
   async start() {
     this.isEnforcing = true;
-
-    // Fast baseline calibration (350ms)
     await this.acousticProctor.calibrateBaseline(350);
-
-    // Run proctoring cycle every 180ms
+    await this.visualProctor.calibrateEnvironment();
     this.timerId = setInterval(() => this.tick(), 180);
   }
 
   async tick() {
     if (!this.isEnforcing) return;
 
-    // 1. Audio telemetry
     const audioMetrics = this.acousticProctor.getMetrics();
-
-    // 2. Video telemetry
     const visualMetrics = await this.visualProctor.analyzeFrame();
 
-    // 3. Dispatch real-time telemetry to UI
     if (this.onTelemetryUpdate) {
       this.onTelemetryUpdate({
         ...audioMetrics,
@@ -555,17 +805,21 @@ export class ProctoringCoordinator {
       });
     }
 
-    // 4. Evaluate Integrity Rules
-
-    // RULE A: Multiple Persons Detected -> IMMEDIATE TEST CLOSURE
+    // RULE A: Multiple Persons Detected
     if (visualMetrics.isMultiplePersons) {
       this.multiPersonConsecutiveFrames++;
-      // Immediate test closure: terminates test as soon as second person is verified across 2 consecutive cycles (~360ms)
-      if (this.multiPersonConsecutiveFrames >= 2) {
+      if (this.multiPersonConsecutiveFrames === 8) {
+        if (this.onWarning) {
+          this.onWarning({
+            type: 'MULTIPLE_PERSONS_WARNING',
+            message: '⚠️ Integrity Alert: Multiple faces detected in camera view. Please ensure you are alone.'
+          });
+        }
+      } else if (this.multiPersonConsecutiveFrames >= 24) {
         this.triggerViolation({
           violationType: 'MULTIPLE_PERSONS',
           title: 'Multiple Persons Detected in Camera View',
-          reason: 'An additional person was detected in your camera frame. Examination policy requires candidates to be strictly alone in a private room. The interview has been automatically closed.',
+          reason: 'An additional person was detected in your camera frame for a sustained duration. Examination policy requires candidates to be strictly alone in a private room. The interview has been automatically closed.',
           evidenceSnapshot: this.visualProctor.captureSnapshot(),
           metrics: {
             detectedPersons: Math.max(2, visualMetrics.detectedPersons),
@@ -575,13 +829,20 @@ export class ProctoringCoordinator {
         return;
       }
     } else {
-      this.multiPersonConsecutiveFrames = Math.max(0, this.multiPersonConsecutiveFrames - 1);
+      this.multiPersonConsecutiveFrames = Math.max(0, this.multiPersonConsecutiveFrames - 2);
     }
 
     // RULE B: Camera Obstruction / Contact
     if (visualMetrics.isCameraObstructed) {
       this.obstructionConsecutiveFrames++;
-      if (this.obstructionConsecutiveFrames >= 6) {
+      if (this.obstructionConsecutiveFrames === 10) {
+        if (this.onWarning) {
+          this.onWarning({
+            type: 'CAMERA_OBSTRUCTED_WARNING',
+            message: '⚠️ Warning: Camera view is obscured or darkened. Please check your webcam lens.'
+          });
+        }
+      } else if (this.obstructionConsecutiveFrames >= 25) {
         this.triggerViolation({
           violationType: 'CAMERA_OBSTRUCTION_CONTACT',
           title: 'Camera Lens Blocked or Physical Contact Detected',
@@ -595,21 +856,20 @@ export class ProctoringCoordinator {
         return;
       }
     } else {
-      this.obstructionConsecutiveFrames = Math.max(0, this.obstructionConsecutiveFrames - 1);
+      this.obstructionConsecutiveFrames = Math.max(0, this.obstructionConsecutiveFrames - 2);
     }
 
     // RULE C: Candidate Left Frame
     if (!visualMetrics.isCandidatePresent && !visualMetrics.isCameraObstructed) {
       this.candidateAbsentConsecutiveFrames++;
-      if (this.candidateAbsentConsecutiveFrames === 5) {
+      if (this.candidateAbsentConsecutiveFrames === 14) {
         if (this.onWarning) {
           this.onWarning({
             type: 'ABSENCE_WARNING',
-            message: '⚠️ Warning: Candidate face not visible in camera frame.'
+            message: '⚠️ Notice: Candidate face not visible in camera frame. Please look towards your screen.'
           });
         }
-      } else if (this.candidateAbsentConsecutiveFrames >= 14) {
-        // ~2.5 seconds absent
+      } else if (this.candidateAbsentConsecutiveFrames >= 50) {
         this.triggerViolation({
           violationType: 'CANDIDATE_ABSENT',
           title: 'Candidate Left Camera Frame',
@@ -622,21 +882,20 @@ export class ProctoringCoordinator {
         return;
       }
     } else {
-      this.candidateAbsentConsecutiveFrames = Math.max(0, this.candidateAbsentConsecutiveFrames - 1);
+      this.candidateAbsentConsecutiveFrames = Math.max(0, this.candidateAbsentConsecutiveFrames - 2);
     }
 
     // RULE D: Excessive Sustained Background Noise / Unauthorized Speech
     if (audioMetrics.isCriticalNoise) {
       this.highNoiseConsecutiveTicks++;
-      if (this.highNoiseConsecutiveTicks === 3) {
+      if (this.highNoiseConsecutiveTicks === 5) {
         if (this.onWarning) {
           this.onWarning({
             type: 'NOISE_WARNING',
-            message: `⚠️ High background noise detected (${audioMetrics.decibels} dB). Please maintain a quiet room.`
+            message: `⚠️ Elevated room noise detected (${audioMetrics.decibels} dB). Please maintain a quiet environment.`
           });
         }
-      } else if (this.highNoiseConsecutiveTicks >= 10) {
-        // Sustained loud background noise (~1.8 seconds)
+      } else if (this.highNoiseConsecutiveTicks >= 20) {
         this.triggerViolation({
           violationType: 'BACKGROUND_NOISE_VIOLATION',
           title: 'Excessive Background Noise / Secondary Voice Detected',

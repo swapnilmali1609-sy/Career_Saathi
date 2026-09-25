@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { apiService } from '../../api/client.js';
 import { DOMAIN_GROUPS, ALL_DOMAINS } from '../../constants/domains.js';
-import { PROGRAMMING_LANGUAGES, getDefaultLanguageForRole } from '../../constants/languages.js';
+import { PROGRAMMING_LANGUAGES, getDefaultLanguageForRole, getLanguagesForRole } from '../../constants/languages.js';
 
 export default function ScheduleView({ onLaunchMock }) {
   const [schedules, setSchedules] = useState([]);
@@ -38,6 +38,23 @@ export default function ScheduleView({ onLaunchMock }) {
     scheduledFor: defaultDateStr,
     notes: ''
   });
+
+  const availableScheduleLanguages = React.useMemo(() => {
+    return getLanguagesForRole(form.targetRole, form.domain);
+  }, [form.targetRole, form.domain]);
+
+  useEffect(() => {
+    const isAllowed = availableScheduleLanguages.some(
+      l => l.name.toLowerCase() === (form.programmingLanguage || '').toLowerCase() ||
+           l.id === (form.programmingLanguage || '').toLowerCase()
+    );
+    if (!isAllowed) {
+      setForm(prev => ({
+        ...prev,
+        programmingLanguage: getDefaultLanguageForRole(prev.targetRole, prev.domain)
+      }));
+    }
+  }, [form.targetRole, form.domain, availableScheduleLanguages, form.programmingLanguage]);
 
   useEffect(() => {
     loadSchedules();
@@ -222,15 +239,20 @@ export default function ScheduleView({ onLaunchMock }) {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Programming Language</label>
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span>Programming Language</span>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--primary)', fontWeight: 500 }}>
+                    Calibrated for {form.targetRole || 'Role'}
+                  </span>
+                </label>
                 <select
                   className="form-select"
                   value={form.programmingLanguage}
                   onChange={(e) => setForm({ ...form, programmingLanguage: e.target.value })}
                 >
-                  {PROGRAMMING_LANGUAGES.map((lang) => (
+                  {availableScheduleLanguages.map((lang) => (
                     <option key={lang.id} value={lang.name}>
-                      {lang.icon ? `${lang.icon} ` : ''}{lang.name}
+                      {lang.icon ? `${lang.icon} ` : ''}{lang.name} — {lang.tag}
                     </option>
                   ))}
                 </select>

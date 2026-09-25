@@ -210,7 +210,7 @@ export async function recordUserActivity(userId, activityType = 'PRACTICE', meta
 }
 
 /**
- * Get detailed streak status with 7-day rolling history for calendar visualization
+ * Get detailed streak status with calendar history distinguishing mock interview days, practice days, and absent days
  */
 export async function getStreakDetails(userId, timeZone = 'UTC') {
   if (!userId) return null;
@@ -236,10 +236,43 @@ export async function getStreakDetails(userId, timeZone = 'UTC') {
     });
   }
 
-  // Generate 7-day calendar history (from 6 days ago to today)
+  // Load all user interview sessions to cross-reference mock interview days
+  let userSessions = [];
+  try {
+    userSessions = (await db.sessions.findByUserId(userId)) || [];
+  } catch (err) {
+    userSessions = [];
+  }
+
+  // Index mock interview sessions by calendar date
+  const sessionsByDate = new Map();
+  for (const s of userSessions) {
+    const rawDate = s.completedAt || s.startedAt || s.createdAt;
+    if (!rawDate) continue;
+    const dateStr = getCalendarDay(rawDate, timeZone);
+    if (!sessionsByDate.has(dateStr)) {
+      sessionsByDate.set(dateStr, []);
+    }
+    sessionsByDate.get(dateStr).push({
+      id: s.id,
+      role: s.targetRole || s.roleProfile?.title || 'Mock Interview',
+      category: s.category || 'TECHNICAL',
+      difficulty: s.difficulty || 'INTERMEDIATE',
+      score: s.overallScore != null ? s.overallScore : null,
+      status: s.status || 'COMPLETED',
+      completedAt: s.completedAt || s.createdAt
+    });
+  }
+
+  // Generate calendar activity set
   const activeDaysSet = new Set(Array.isArray(progress.activityDays) ? progress.activityDays : []);
   if (status.todayCompleted) {
     activeDaysSet.add(getCalendarDay(now, timeZone));
+  }
+
+  // Add all dates where mock sessions exist into active days
+  for (const dateKey of sessionsByDate.keys()) {
+    activeDaysSet.add(dateKey);
   }
 
   // Synthesize active days corresponding to current streak if not already populated
@@ -251,21 +284,80 @@ export async function getStreakDetails(userId, timeZone = 'UTC') {
     }
   }
 
-  const rolling7Days = [];
+  // Helper to build rolling day history with exact Mock Given vs Absent classification
+  function buildRollingDays(numDays) {
+    const result = [];
+    for (let i = numDays - 1; i >= 0; i--) {
+      const targetDate = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+      const dateStr = getCalendarDay(targetDate, timeZone);
+      const dayOfWeek = new Intl.DateTimeFormat('en-US', { timeZone: timeZone || 'UTC', weekday: 'short' }).format(targetDate);
+      const dayFormatted = new Intl.DateTimeFormat('en-US', { timeZone: timeZone || 'UTC', day: 'numeric', month: 'short' }).format(targetDate);
+      const isToday = i === 0;
 
-  for (let i = 6; i >= 0; i--) {
-    const targetDate = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-    const dateStr = getCalendarDay(targetDate, timeZone);
-    const dayOfWeek = new Intl.DateTimeFormat('en-US', { timeZone: timeZone || 'UTC', weekday: 'short' }).format(targetDate);
-    const isToday = i === 0;
+      const dayMocks = sessionsByDate.get(dateStr) || [];
+      const hasMock = dayMocks.length > 0;
+      const hasPractice = activeDaysSet.has(dateStr);
 
-    rolling7Days.push({
-      date: dateStr,
-      day: dayOfWeek,
-      isToday,
-      active: activeDaysSet.has(dateStr)
-    });
+      let dayStatus = 'ABSENT';
+      let statusLabel = 'Absent (No Mock or Practice Session)';
+
+      if (isToday) {
+        if (hasMock) {
+          dayStatus = 'MOCK_GIVEN';
+          statusLabel = `Mock Interview Completed Today (${dayMocks.length} ${dayMocks.length === 1 ? 'session' : 'sessions'})`;
+        } else if (hasPractice || status.todayCompleted) {
+          dayStatus = 'PRACTICE_COMPLETED';
+          statusLabel = 'Daily Practice Completed Today';
+        } else {
+          dayStatus = 'TODAY_PENDING';
+          statusLabel = 'Practice Pending Today';
+        }
+      } else {
+        // Past day
+        if (hasMock) {
+          dayStatus = 'MOCK_GIVEN';
+          const topMock = dayMocks[0];
+          statusLabel = `Mock Interview Given: ${topMock.role}${topMock.score != null ? ` (Score: ${topMock.score}%)` : ''}`;
+        } else if (hasPractice) {
+          dayStatus = 'PRACTICE_COMPLETED';
+          statusLabel = 'Daily Practice Drill Completed';
+        } else {
+          dayStatus = 'ABSENT';
+          statusLabel = 'Absent (No Mock or Practice Session)';
+        }
+      }
+
+      const isAbsent = !isToday && !hasMock && !hasPractice;
+      const isActive = hasMock || hasPractice || (isToday && status.todayCompleted);
+
+      result.push({
+        date: dateStr,
+        day: dayOfWeek,
+        dayFormatted,
+        isToday,
+        active: isActive,
+        hasMock,
+        mockCount: dayMocks.length,
+        mocks: dayMocks,
+        isAbsent,
+        status: dayStatus,
+        statusLabel
+      });
+    }
+    return result;
   }
+
+  const rolling7Days = buildRollingDays(7);
+  const rolling14Days = buildRollingDays(14);
+  const rolling30Days = buildRollingDays(30);
+
+  const totalMocksIn7Days = rolling7Days.filter(d => d.hasMock).length;
+  const totalAbsentIn7Days = rolling7Days.filter(d => d.isAbsent).length;
+  const totalActiveIn7Days = rolling7Days.filter(d => d.active).length;
+
+  const totalMocksIn30Days = rolling30Days.filter(d => d.hasMock).length;
+  const totalAbsentIn30Days = rolling30Days.filter(d => d.isAbsent).length;
+  const totalActiveIn30Days = rolling30Days.filter(d => d.active).length;
 
   const nextMilestone = status.currentStreakDays < 3 ? 3
     : status.currentStreakDays < 7 ? 7
@@ -281,6 +373,22 @@ export async function getStreakDetails(userId, timeZone = 'UTC') {
     streakBroken: status.streakBroken,
     nextMilestone,
     lastActiveDate: status.lastActiveDate,
-    rolling7Days
+    rolling7Days,
+    rolling14Days,
+    rolling30Days,
+    totalMocksIn7Days,
+    totalAbsentIn7Days,
+    totalActiveIn7Days,
+    totalMocksIn30Days,
+    totalAbsentIn30Days,
+    totalActiveIn30Days,
+    summary: {
+      totalMocks: totalMocksIn30Days,
+      totalAbsent: totalAbsentIn30Days,
+      totalActive: totalActiveIn30Days,
+      weeklyMocks: totalMocksIn7Days,
+      weeklyAbsent: totalAbsentIn7Days,
+      weeklyActive: totalActiveIn7Days
+    }
   };
 }

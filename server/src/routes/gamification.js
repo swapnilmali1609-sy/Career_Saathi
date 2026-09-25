@@ -43,6 +43,12 @@ router.get('/status', requireAuth, async (req, res) => {
       streakBroken: streakDetails?.streakBroken ?? false,
       nextMilestone: streakDetails?.nextMilestone ?? 7,
       rolling7Days: streakDetails?.rolling7Days ?? [],
+      rolling14Days: streakDetails?.rolling14Days ?? [],
+      rolling30Days: streakDetails?.rolling30Days ?? [],
+      totalMocksIn7Days: streakDetails?.totalMocksIn7Days ?? 0,
+      totalAbsentIn7Days: streakDetails?.totalAbsentIn7Days ?? 0,
+      totalMocksIn30Days: streakDetails?.totalMocksIn30Days ?? 0,
+      totalAbsentIn30Days: streakDetails?.totalAbsentIn30Days ?? 0,
       lastActiveDate: streakDetails?.lastActiveDate || progress.lastActiveDate,
       badges: badgeList
     });

@@ -16,10 +16,13 @@ import adminRouter from './routes/admin.js';
 import scheduleRouter from './routes/schedule.js';
 import { initDb } from './db/index.js';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load environment variables from server/.env or root .env
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config();
 
 const app = express();
 

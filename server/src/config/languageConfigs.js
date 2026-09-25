@@ -4,6 +4,8 @@
  * Defines core pillars, allowed topics, prohibited topics, strict instructions, and curated questions.
  */
 
+import { getRoleProfile } from './roleConfigs.js';
+
 export const LANGUAGE_PROFILES = {
   python: {
     id: 'python',
@@ -740,3 +742,109 @@ export function getLanguageProfile(languageInput = '') {
 }
 
 export const PROGRAMMING_LANGUAGES = LANGUAGE_PROFILES;
+
+export const ROLE_LANGUAGES_CONFIG = {
+  frontend_developer: {
+    defaultLanguage: 'JavaScript',
+    popularLanguages: ['javascript', 'typescript'],
+    allowedLanguages: ['javascript', 'typescript']
+  },
+  data_scientist: {
+    defaultLanguage: 'Python',
+    popularLanguages: ['python', 'sql'],
+    allowedLanguages: ['python', 'sql', 'cpp']
+  },
+  devops_cloud_engineer: {
+    defaultLanguage: 'Go (Golang)',
+    popularLanguages: ['golang', 'python'],
+    allowedLanguages: ['golang', 'python', 'rust']
+  },
+  cybersecurity_analyst: {
+    defaultLanguage: 'Python',
+    popularLanguages: ['python', 'cpp', 'golang'],
+    allowedLanguages: ['python', 'cpp', 'golang', 'rust', 'sql']
+  },
+  qa_automation_sdet: {
+    defaultLanguage: 'Java',
+    popularLanguages: ['java', 'python', 'javascript'],
+    allowedLanguages: ['java', 'python', 'javascript', 'typescript', 'csharp']
+  },
+  system_architect: {
+    defaultLanguage: 'Java',
+    popularLanguages: ['java', 'golang', 'cpp'],
+    allowedLanguages: ['java', 'golang', 'cpp', 'rust', 'csharp', 'python', 'sql']
+  },
+  fullstack_developer: {
+    defaultLanguage: 'TypeScript',
+    popularLanguages: ['typescript', 'javascript', 'python'],
+    allowedLanguages: ['typescript', 'javascript', 'python', 'java', 'csharp', 'golang', 'php', 'ruby', 'sql']
+  },
+  software_engineer: {
+    defaultLanguage: 'Java',
+    popularLanguages: ['java', 'python', 'golang', 'cpp'],
+    allowedLanguages: ['java', 'python', 'golang', 'cpp', 'csharp', 'rust', 'typescript', 'javascript', 'php', 'ruby', 'sql']
+  }
+};
+
+/**
+ * Retrieve only the programming languages strictly calibrated for the selected role
+ */
+export function getLanguagesForRole(role = '', domain = '') {
+  const cleanRole = String(role || '').toLowerCase();
+
+  // Mobile specific roles
+  if (cleanRole.includes('android')) {
+    const list = ['kotlin', 'java'];
+    return Object.values(LANGUAGE_PROFILES).filter(l => list.includes(l.id)).map(l => ({ ...l, popular: true }));
+  }
+  if (cleanRole.includes('ios') || cleanRole.includes('swift')) {
+    return Object.values(LANGUAGE_PROFILES).filter(l => l.id === 'swift').map(l => ({ ...l, popular: true }));
+  }
+  if (cleanRole.includes('mobile') || cleanRole.includes('react native') || cleanRole.includes('flutter')) {
+    const list = ['typescript', 'javascript', 'kotlin', 'swift'];
+    return Object.values(LANGUAGE_PROFILES).filter(l => list.includes(l.id)).map(l => ({
+      ...l,
+      popular: ['typescript', 'javascript'].includes(l.id)
+    }));
+  }
+
+  const roleProfile = getRoleProfile(role, domain);
+  const config = ROLE_LANGUAGES_CONFIG[roleProfile?.id] || ROLE_LANGUAGES_CONFIG.software_engineer;
+
+  const allowedIds = new Set(config.allowedLanguages);
+  const popularIds = new Set(config.popularLanguages);
+
+  const matched = Object.values(LANGUAGE_PROFILES)
+    .filter(l => allowedIds.has(l.id))
+    .map(l => ({
+      ...l,
+      popular: popularIds.has(l.id)
+    }));
+
+  return matched.length > 0 ? matched : Object.values(LANGUAGE_PROFILES);
+}
+
+/**
+ * Automatically determine the most fitting default programming language based on target role
+ */
+export function getDefaultLanguageForRole(role = '', domain = '') {
+  const cleanRole = String(role || '').toLowerCase();
+
+  if (cleanRole.includes('android')) return 'Kotlin';
+  if (cleanRole.includes('ios') || cleanRole.includes('swift')) return 'Swift';
+  if (cleanRole.includes('mobile')) return 'TypeScript';
+
+  const roleProfile = getRoleProfile(role, domain);
+  const config = ROLE_LANGUAGES_CONFIG[roleProfile?.id] || ROLE_LANGUAGES_CONFIG.software_engineer;
+  return config.defaultLanguage || 'Python';
+}
+
+/**
+ * Check whether a programming language is valid/calibrated for the chosen role
+ */
+export function isLanguageAllowedForRole(langNameOrId = '', role = '', domain = '') {
+  if (!langNameOrId) return false;
+  const allowed = getLanguagesForRole(role, domain);
+  const clean = langNameOrId.trim().toLowerCase();
+  return allowed.some(l => l.id === clean || l.name.toLowerCase() === clean);
+}
