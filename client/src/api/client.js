@@ -24,6 +24,11 @@ export async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
+    if (response.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.dispatchEvent(new CustomEvent('auth:expired', { detail: data.message }));
+    }
     throw new Error(data.message || 'API request failed');
   }
 

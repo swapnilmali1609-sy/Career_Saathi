@@ -70,6 +70,18 @@ export default function App() {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   };
 
+  // Handle authentication session expiry
+  useEffect(() => {
+    const handleAuthExpired = (e) => {
+      setUser(null);
+      setPage('dashboard');
+      setAuthMode('login');
+      alert(e.detail || 'Your session has expired. Please sign in again.');
+    };
+    window.addEventListener('auth:expired', handleAuthExpired);
+    return () => window.removeEventListener('auth:expired', handleAuthExpired);
+  }, []);
+
   // Load user data on authentication
   useEffect(() => {
     if (user) {
@@ -157,7 +169,9 @@ export default function App() {
       setActiveSession(session);
       setPage('live-interview');
     } catch (err) {
-      alert('Failed to initialize mock interview: ' + err.message);
+      if (!err.message?.includes('expired') && !err.message?.includes('authentication')) {
+        alert('Failed to initialize mock interview: ' + err.message);
+      }
     } finally {
       setLoadingLaunch(false);
     }
