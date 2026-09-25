@@ -761,19 +761,19 @@ export const userProgress = {
              last_active_date = EXCLUDED.last_active_date;`,
           [
             userId,
-            merged.totalInterviews || 0,
-            merged.totalAnswers || 0,
-            merged.averageScore || 0,
-            merged.technicalAverage || 0,
-            merged.communicationAvg || 0,
-            merged.confidenceAvg || 0,
-            merged.currentStreakDays || 1,
-            merged.longestStreakDays || 1,
-            merged.totalXpPoints || 50,
-            merged.level || 1,
+            merged.totalInterviews ?? 0,
+            merged.totalAnswers ?? 0,
+            merged.averageScore ?? 0,
+            merged.technicalAverage ?? 0,
+            merged.communicationAvg ?? 0,
+            merged.confidenceAvg ?? 0,
+            merged.currentStreakDays ?? 0,
+            merged.longestStreakDays ?? 0,
+            merged.totalXpPoints ?? 0,
+            merged.level ?? 1,
             JSON.stringify(merged.strongestTopics || []),
             JSON.stringify(merged.weakestTopics || []),
-            merged.lastActiveDate || new Date().toISOString()
+            merged.lastActiveDate !== undefined ? merged.lastActiveDate : null
           ]
         );
         return merged;

@@ -180,7 +180,10 @@ async function runStreakTests() {
   console.log('======================================================\n');
 }
 
-runStreakTests().catch(err => {
+runStreakTests().then(() => {
+  process.exit(0);
+}).catch(err => {
   console.error('\n❌ STREAK TEST SUITE FAILED:', err);
   process.exit(1);
 });
+
